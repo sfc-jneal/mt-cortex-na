@@ -1,0 +1,99 @@
+-- ============================================================
+-- IDEAL ARCHITECTURE POC — Provider Setup
+-- Phase 3: Multi-tenant data with Row Access Policy
+-- Creates: Database, schema, multi-tenant sample data,
+--          secure view, RAP, semantic view
+-- ============================================================
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ${WAREHOUSE};
+
+-- New database for the ideal architecture PoC
+CREATE DATABASE IF NOT EXISTS IDEAL_AGENT_POC;
+CREATE SCHEMA IF NOT EXISTS IDEAL_AGENT_POC.DATA;
+
+-- Multi-tenant sales table (Phase 3: tenant_id maps to account locator)
+CREATE OR REPLACE TABLE IDEAL_AGENT_POC.DATA.SALES (
+    sale_id INT,
+    tenant_id VARCHAR,
+    sale_date DATE,
+    product_name VARCHAR,
+    category VARCHAR,
+    quantity INT,
+    unit_price DECIMAL(10,2),
+    total_amount DECIMAL(10,2),
+    region VARCHAR,
+    salesperson VARCHAR
+);
+
+-- Provider tenant data (account ${PROVIDER_ACCOUNT}) — same 5 rows as Phase 2
+INSERT INTO IDEAL_AGENT_POC.DATA.SALES VALUES
+(1, '${PROVIDER_ACCOUNT}', '2025-01-15', 'Widget A', 'Electronics', 10, 29.99, 299.90, 'North', 'Alice'),
+(2, '${PROVIDER_ACCOUNT}', '2025-01-16', 'Widget B', 'Electronics', 5, 49.99, 249.95, 'South', 'Bob'),
+(3, '${PROVIDER_ACCOUNT}', '2025-02-01', 'Service X', 'Services', 1, 500.00, 500.00, 'East', 'Carol'),
+(4, '${PROVIDER_ACCOUNT}', '2025-02-10', 'Widget A', 'Electronics', 20, 29.99, 599.80, 'West', 'Dave'),
+(5, '${PROVIDER_ACCOUNT}', '2025-03-01', 'Service Y', 'Services', 3, 200.00, 600.00, 'North', 'Alice');
+
+-- Consumer tenant data (account ${CONSUMER_ACCOUNT}) — different products/people/amounts
+INSERT INTO IDEAL_AGENT_POC.DATA.SALES VALUES
+(6,  '${CONSUMER_ACCOUNT}', '2025-01-20', 'Gadget Pro',         'Accessories', 8,  75.00,  600.00, 'South', 'Eve'),
+(7,  '${CONSUMER_ACCOUNT}', '2025-01-25', 'Gadget Lite',        'Accessories', 15, 30.00,  450.00, 'East',  'Frank'),
+(8,  '${CONSUMER_ACCOUNT}', '2025-02-05', 'Consulting Basic',   'Services',    1,  800.00, 800.00, 'West',  'Grace'),
+(9,  '${CONSUMER_ACCOUNT}', '2025-02-15', 'Consulting Premium', 'Services',    1, 1200.00,1200.00, 'South', 'Eve'),
+(10, '${CONSUMER_ACCOUNT}', '2025-03-10', 'Gadget Max',         'Accessories', 4,  50.00,  200.00, 'East',  'Frank');
+
+-- Secure view exposes all columns EXCEPT tenant_id (RAP filters transparently)
+CREATE OR REPLACE SECURE VIEW IDEAL_AGENT_POC.DATA.V_SALES AS
+SELECT sale_id, sale_date, product_name, category, quantity, unit_price,
+       total_amount, region, salesperson
+FROM IDEAL_AGENT_POC.DATA.SALES;
+
+-- ============================================================
+-- Row Access Policy: filter rows by tenant account
+-- CURRENT_ACCOUNT() returns the account locator of the caller.
+-- Each tenant only sees rows where tenant_id matches their account.
+-- ============================================================
+CREATE OR REPLACE ROW ACCESS POLICY IDEAL_AGENT_POC.DATA.TENANT_RAP
+  AS (tenant_id VARCHAR) RETURNS BOOLEAN ->
+    tenant_id = CURRENT_ACCOUNT();
+
+-- Attach RAP to the BASE TABLE (not the view — RAPs on secure views
+-- require the policy column to exist in the view's SELECT list, but
+-- we deliberately exclude tenant_id from V_SALES).
+ALTER TABLE IDEAL_AGENT_POC.DATA.SALES
+  ADD ROW ACCESS POLICY IDEAL_AGENT_POC.DATA.TENANT_RAP ON (tenant_id);
+
+-- ============================================================
+-- Semantic view over the sales data (must live in provider DB,
+-- not inside the native app, so SEMANTIC_VIEW() function works)
+-- ============================================================
+CREATE OR REPLACE SEMANTIC VIEW IDEAL_AGENT_POC.DATA.SALES_SEMANTIC_VIEW
+  TABLES (
+    sales AS IDEAL_AGENT_POC.DATA.V_SALES
+      PRIMARY KEY (sale_id)
+      COMMENT = 'Sales transactions with product, region, and salesperson details'
+  )
+  DIMENSIONS (
+    sales.sale_id AS sale_id
+      COMMENT = 'Unique identifier for the sale',
+    sales.sale_date AS sale_date
+      COMMENT = 'Date when the sale occurred',
+    sales.product_name AS product_name
+      COMMENT = 'Name of the product sold',
+    sales.category AS category
+      COMMENT = 'Product category (Electronics or Services)',
+    sales.region AS region
+      COMMENT = 'Sales region (North, South, East, West)',
+    sales.salesperson AS salesperson
+      COMMENT = 'Name of the salesperson'
+  )
+  METRICS (
+    sales.total_quantity AS SUM(quantity)
+      COMMENT = 'Total quantity of items sold',
+    sales.total_revenue AS SUM(total_amount)
+      COMMENT = 'Total sales revenue in dollars',
+    sales.avg_price AS AVG(unit_price)
+      COMMENT = 'Average price per unit in dollars',
+    sales.num_sales AS COUNT(sale_id)
+      COMMENT = 'Number of sales transactions'
+  );

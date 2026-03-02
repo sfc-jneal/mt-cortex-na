@@ -1,0 +1,113 @@
+-- ============================================================
+-- IDEAL ARCHITECTURE POC — Phase 5: Share & Publish
+-- Run on: ${SNOW_CONNECTION} (provider account ${PROVIDER_ACCOUNT})
+--
+-- This script:
+--   1. Grants REFERENCE_USAGE on the provider DB to the app package share
+--   2. Creates a SHARED_CONTENT schema with a proxy view
+--   3. Grants the proxy view to the share
+--   4. Uploads app files to the stage
+--   5. Adds a version and sets the release directive
+--   6. Sets distribution to EXTERNAL
+--
+-- Prerequisites:
+--   - provider/01_setup.sql has been run (IDEAL_AGENT_POC database exists)
+--   - scripts/deploy.sql has been run (IDEAL_AGENT_APP_PKG exists with stage)
+--   - App files uploaded to stage (manifest.yml, setup.sql, streamlit/, environment.yml)
+-- ============================================================
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ${WAREHOUSE};
+
+-- ============================================================
+-- Step 1: Grant REFERENCE_USAGE on provider DB to the share
+-- This allows proxy views in the app package to reference
+-- objects in IDEAL_AGENT_POC without granting direct access.
+-- ============================================================
+GRANT REFERENCE_USAGE ON DATABASE IDEAL_AGENT_POC
+    TO SHARE IN APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+
+-- ============================================================
+-- Step 2: Create SHARED_CONTENT schema in the app package
+-- This schema holds proxy views that the app's setup.sql reads.
+-- The name "SHARED_CONTENT" is referenced in setup.sql.
+-- ============================================================
+CREATE SCHEMA IF NOT EXISTS IDEAL_AGENT_APP_PKG.SHARED_CONTENT;
+
+-- Proxy view: reads from the provider's secure view (RAP applied on base table)
+CREATE OR REPLACE VIEW IDEAL_AGENT_APP_PKG.SHARED_CONTENT.V_SALES
+    AS SELECT * FROM IDEAL_AGENT_POC.DATA.V_SALES;
+
+-- Grant the proxy view to the share so consumers can access it
+GRANT USAGE ON SCHEMA IDEAL_AGENT_APP_PKG.SHARED_CONTENT
+    TO SHARE IN APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+GRANT SELECT ON VIEW IDEAL_AGENT_APP_PKG.SHARED_CONTENT.V_SALES
+    TO SHARE IN APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+
+-- ============================================================
+-- Step 3: Upload app files to stage
+-- Run these CLI commands BEFORE proceeding to Step 4:
+--
+--   snow stage copy app-package/manifest.yml \
+--     @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/ \
+--     --overwrite --connection ${SNOW_CONNECTION}
+--
+--   snow stage copy app-package/setup.sql \
+--     @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/ \
+--     --overwrite --connection ${SNOW_CONNECTION}
+--
+--   snow stage copy app-package/environment.yml \
+--     @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/ \
+--     --overwrite --connection ${SNOW_CONNECTION}
+--
+--   snow stage copy app-package/streamlit/chatbot.py \
+--     @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/streamlit/ \
+--     --overwrite --connection ${SNOW_CONNECTION}
+--
+-- Verify:
+-- ============================================================
+LIST @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE;
+
+-- ============================================================
+-- Step 4: Add version (first time) or patch (updates)
+--
+-- FIRST TIME: uncomment ADD VERSION, then SET RELEASE DIRECTIVE
+-- UPDATES:   uncomment ADD PATCH instead
+-- ============================================================
+
+-- First deployment:
+-- ALTER APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+--     ADD VERSION V1_0
+--     USING '@IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE';
+
+-- Updates (increment patch):
+-- ALTER APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+--     ADD PATCH FOR VERSION V1_0
+--     USING '@IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE';
+
+-- Set release directive (required after ADD VERSION):
+-- ALTER APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+--     SET DEFAULT RELEASE DIRECTIVE
+--     VERSION = V1_0 PATCH = 0;
+
+-- ============================================================
+-- Step 5: Set distribution to EXTERNAL
+-- Required for cross-account installs.
+-- ============================================================
+ALTER APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+    SET DISTRIBUTION = EXTERNAL;
+
+-- ============================================================
+-- Step 6: (Optional) Grant install to specific consumer account
+-- For private listings / org-internal sharing.
+-- ============================================================
+-- GRANT INSTALL ON APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+--     TO ACCOUNT ${CONSUMER_ACCOUNT};
+
+-- ============================================================
+-- Verify
+-- ============================================================
+SHOW APPLICATION PACKAGES LIKE 'IDEAL_AGENT_APP_PKG';
+SHOW VERSIONS IN APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+SELECT "property", "value" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-2)))
+    WHERE "property" IN ('distribution', 'comment');

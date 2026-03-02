@@ -1,0 +1,45 @@
+-- ============================================================
+-- IDEAL ARCHITECTURE POC — Install App (Same-Account Dev Mode)
+-- Phase 5: Cross-Account Distribution
+-- Run on: ${SNOW_CONNECTION} (provider account)
+--
+-- For dev mode, the app reads from SHARED_CONTENT.V_SALES
+-- (proxy view in the app package). The semantic view and agent
+-- are created inside the app — no external grants needed.
+-- ============================================================
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ${WAREHOUSE};
+
+-- Drop existing app if re-deploying
+DROP APPLICATION IF EXISTS IDEAL_AGENT_APP CASCADE;
+
+-- Dev mode install (from stage, no version registration needed)
+CREATE APPLICATION IDEAL_AGENT_APP
+    FROM APPLICATION PACKAGE IDEAL_AGENT_APP_PKG
+    USING '@IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE';
+
+-- Grant cortex database role to the app (agent API access)
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION IDEAL_AGENT_APP;
+
+-- Initialize: only warehouse needed (semantic view is internal)
+CALL IDEAL_AGENT_APP.CORE.INITIALIZE('${WAREHOUSE}');
+
+-- ============================================================
+-- Verify
+-- ============================================================
+
+-- Check semantic view exists (inside the app now)
+SHOW SEMANTIC VIEWS IN IDEAL_AGENT_APP.CORE;
+
+-- Check agent exists (inside the app)
+SHOW AGENTS IN APPLICATION IDEAL_AGENT_APP;
+
+-- Check the internal view can read shared data
+SELECT COUNT(*) AS row_count FROM IDEAL_AGENT_APP.CORE.V_SALES;
+SELECT * FROM IDEAL_AGENT_APP.CORE.V_SALES;
+
+-- Test agent queries
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('What is the total revenue?');
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('Which salesperson has the highest total revenue?');
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('Show me revenue by category.');

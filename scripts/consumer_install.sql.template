@@ -1,0 +1,69 @@
+-- ============================================================
+-- IDEAL ARCHITECTURE POC — Phase 5: Consumer Install
+-- Run on: consumer account (e.g., ${CONSUMER_ACCOUNT} via ${SNOW_CONNECTION})
+--
+-- Prerequisites:
+--   - Provider has run scripts/share.sql (app package published)
+--   - Consumer has access to the listing or GRANT INSTALL
+--
+-- After install, the app:
+--   - Has its own semantic view pointing to shared data
+--   - RAP on the provider's base table filters by CURRENT_ACCOUNT()
+--   - Consumer sees ONLY their own tenant's data
+-- ============================================================
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ${WAREHOUSE};
+
+-- ============================================================
+-- Step 1: Install the app from the published package
+-- ============================================================
+-- From a listing:
+-- CREATE APPLICATION IDEAL_AGENT_APP
+--     FROM LISTING '<listing_global_name>';
+
+-- From a direct share (org-internal):
+CREATE APPLICATION IDEAL_AGENT_APP
+    FROM APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+
+-- ============================================================
+-- Step 2: Grant Cortex access to the app
+-- The agent needs CORTEX_USER to call Cortex Analyst.
+-- ============================================================
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION IDEAL_AGENT_APP;
+
+-- ============================================================
+-- Step 3: Initialize the agent
+-- Only parameter needed is the warehouse name.
+-- The semantic view is created inside the app automatically.
+-- ============================================================
+CALL IDEAL_AGENT_APP.CORE.INITIALIZE('${WAREHOUSE}');
+
+-- ============================================================
+-- Verify: Test the agent
+-- ============================================================
+
+-- Quick health check
+CALL IDEAL_AGENT_APP.CORE.TEST_AGENT();
+
+-- Data query — should return ONLY this account's data
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('What is the total revenue?');
+
+-- Salesperson breakdown — should show only this tenant's salespersons
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('Show me revenue by salesperson.');
+
+-- Category breakdown
+CALL IDEAL_AGENT_APP.CORE.CALL_AGENT('Show me revenue by category.');
+
+-- ============================================================
+-- Verify: Direct data check via the app's internal view
+-- Consumer should only see their own rows (RAP filters by account)
+-- ============================================================
+SELECT COUNT(*) AS row_count FROM IDEAL_AGENT_APP.CORE.V_SALES;
+SELECT * FROM IDEAL_AGENT_APP.CORE.V_SALES;
+
+-- ============================================================
+-- Access the Streamlit chat UI
+-- Navigate to: Snowsight > Data Products > Apps > IDEAL_AGENT_APP
+-- Or open the Streamlit tab in the app details page.
+-- ============================================================

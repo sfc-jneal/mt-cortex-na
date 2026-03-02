@@ -1,0 +1,24 @@
+-- ============================================================
+-- IDEAL ARCHITECTURE POC — Deploy App Package (Provider)
+-- Run on: ${SNOW_CONNECTION}
+-- ============================================================
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ${WAREHOUSE};
+
+-- Create application package
+CREATE APPLICATION PACKAGE IF NOT EXISTS IDEAL_AGENT_APP_PKG;
+
+-- Create stage for app files
+CREATE SCHEMA IF NOT EXISTS IDEAL_AGENT_APP_PKG.STAGE_SCHEMA;
+CREATE OR REPLACE STAGE IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE
+    DIRECTORY = (ENABLE = TRUE);
+
+-- Files are uploaded via CLI (snow stage copy) before running this:
+--   snow stage copy app-package/manifest.yml @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/ --connection ${SNOW_CONNECTION}
+--   snow stage copy app-package/setup.sql @IDEAL_AGENT_APP_PKG.STAGE_SCHEMA.APP_STAGE/ --connection ${SNOW_CONNECTION}
+
+-- Share provider data with the app package
+GRANT USAGE ON DATABASE IDEAL_AGENT_POC TO APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+GRANT USAGE ON SCHEMA IDEAL_AGENT_POC.DATA TO APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;
+GRANT SELECT ON VIEW IDEAL_AGENT_POC.DATA.V_SALES TO APPLICATION PACKAGE IDEAL_AGENT_APP_PKG;

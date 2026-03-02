@@ -1,0 +1,9 @@
+# User config (contains account-specific values)
+.env
+
+# Rendered SQL files (generated from .template by `make render`)
+provider/01_setup.sql
+scripts/deploy.sql
+scripts/share.sql
+scripts/install.sql
+scripts/consumer_install.sql

@@ -1,0 +1,19 @@
+manifest_version: 1
+
+version:
+  name: V1_0
+  label: "Version 1.0"
+
+artifacts:
+  setup_script: setup.sql
+  default_streamlit: CORE.CHATBOT
+  extension_code: true
+
+privileges:
+  - CREATE DATABASE:
+      description: "Required to access shared data"
+
+configuration:
+  log_level: debug
+  trace_level: always
+
