@@ -18,7 +18,8 @@ render: .env $(TEMPLATES)
 			-e "s|\$${PROVIDER_ACCOUNT}|$$PROVIDER_ACCOUNT|g" \
 			-e "s|\$${CONSUMER_ACCOUNT}|$$CONSUMER_ACCOUNT|g" \
 			-e "s|\$${WAREHOUSE}|$$WAREHOUSE|g" \
-			-e "s|\$${SNOW_CONNECTION}|$$SNOW_CONNECTION|g" \
+      -e "s|\$${SNOW_CONNECTION}|$$SNOW_CONNECTION|g" \
+      -e "s|\$${APP_NAME}|$$APP_NAME|g" \
 			"$$out"; \
 		echo "  rendered $$out"; \
 	done

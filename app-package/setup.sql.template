@@ -4,11 +4,16 @@
 --
 -- The app is self-contained: shared data arrives via
 -- SHARED_CONTENT.V_SALES (proxy view in app package).
--- Setup creates a semantic view inside the app over that data.
+-- Setup creates semantic view + agent inside the app.
+--
+-- This is a TEMPLATE — render with `make render` before upload.
+-- Template variables: ${APP_NAME}, ${WAREHOUSE}
+--
 -- Consumer workflow:
 --   1. Install app from listing
 --   2. GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app>
---   3. CALL <app>.CORE.INITIALIZE('<warehouse_name>')
+--   3. (Optional) CALL <app>.CORE.INITIALIZE('<warehouse>')
+--      Only needed if consumer uses a different warehouse.
 -- ============================================================
 
 CREATE APPLICATION ROLE IF NOT EXISTS APP_PUBLIC;
@@ -27,7 +32,8 @@ GRANT USAGE ON SCHEMA CORE TO APPLICATION ROLE APP_ADMIN;
 CREATE OR REPLACE VIEW CORE.V_SALES AS
 SELECT * FROM SHARED_CONTENT.V_SALES;
 
-GRANT SELECT ON VIEW CORE.V_SALES TO APPLICATION ROLE APP_PUBLIC;
+-- SELECT grant removed per review: Owner's Rights procedures
+-- already have access; consumers don't need direct SELECT.
 
 -- ============================================================
 -- SEMANTIC VIEW: Created inside the app at install time.
@@ -65,12 +71,51 @@ CREATE OR REPLACE SEMANTIC VIEW CORE.SALES_SEMANTIC_VIEW
       COMMENT = 'Number of sales transactions'
   );
 
-GRANT SELECT ON SEMANTIC VIEW CORE.SALES_SEMANTIC_VIEW TO APPLICATION ROLE APP_PUBLIC;
+-- SELECT grant on semantic view removed per review: same reasoning.
 
 -- ============================================================
--- INITIALIZE: Creates agent post-install
--- Consumer calls this after granting CORTEX_USER to the app.
--- Only needs the warehouse name — semantic view is internal.
+-- AGENT: Created at install time in the setup script.
+-- Semantic view FQN must be fully-qualified (partially-qualified
+-- identifiers not yet supported for tool resources).
+-- Warehouse defaults to ${WAREHOUSE}; consumer can reconfigure
+-- by calling CORE.INITIALIZE('<their_warehouse>').
+--
+-- FQN and warehouse are rendered from template variables.
+-- ============================================================
+CREATE OR REPLACE AGENT CORE.SALES_AGENT FROM SPECIFICATION $$
+{
+  "instructions": {
+    "response": "Always include the actual numbers from query results in your response. Be concise and direct.",
+    "system": "You are a sales data analyst. Answer questions using the sales_analyst tool. Always report the exact figures returned by queries.",
+    "orchestration": "If the sales_analyst tool returns 0 rows or empty results, rephrase your query and try again. For example, instead of asking for 'total revenue' try asking for 'revenue grouped by product_name' or include a dimension like sale_date, region, or category in the query. Do not tell the user the query returned no results until you have retried at least once with a rephrased question that includes a GROUP BY dimension."
+  },
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "sales_analyst",
+        "description": "Query sales data to answer questions about products, revenue, regions, and salesperson performance."
+      }
+    }
+  ],
+  "tool_resources": {
+    "sales_analyst": {
+      "semantic_view": "${APP_NAME}.CORE.SALES_SEMANTIC_VIEW",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "${WAREHOUSE}"
+      }
+    }
+  }
+}
+$$;
+
+GRANT USAGE ON AGENT CORE.SALES_AGENT TO APPLICATION ROLE APP_PUBLIC;
+
+-- ============================================================
+-- INITIALIZE: Reconfigures agent with consumer's warehouse.
+-- Optional — only needed if consumer uses a different warehouse
+-- than the default set at install time.
 -- ============================================================
 CREATE OR REPLACE PROCEDURE CORE.INITIALIZE(warehouse_name STRING)
 RETURNS STRING
@@ -116,14 +161,16 @@ def run(session, warehouse_name: str) -> str:
     session.sql(create_agent_sql).collect()
     session.sql("GRANT USAGE ON AGENT CORE.SALES_AGENT TO APPLICATION ROLE APP_PUBLIC").collect()
 
-    return f"Initialized: agent using {semantic_view}, warehouse {warehouse_name}"
+    return f"Reconfigured: agent using {semantic_view}, warehouse {warehouse_name}"
 $$;
 
 GRANT USAGE ON PROCEDURE CORE.INITIALIZE(STRING) TO APPLICATION ROLE APP_PUBLIC;
 
 -- ============================================================
--- OR PROCEDURE: Call agent via internal Snow API
--- Pattern from func spec appendix
+-- CALL_AGENT: Invoke agent via internal Snow API
+-- NOTE: DATA_AGENT_RUN cannot see semantic views inside a
+-- Native App (runs in caller context). send_snow_api_request
+-- runs within the app's owner context and works correctly.
 -- ============================================================
 CREATE OR REPLACE PROCEDURE CORE.CALL_AGENT(prompt STRING)
 RETURNS STRING
@@ -164,19 +211,15 @@ def run(session, prompt: str) -> str:
     content = resp.get("content", "")
 
     if status == 200:
-        # Response is a JSON array of event objects
         try:
             events = json.loads(content)
-            # Look for the final "response" event with complete text
             for event in events:
                 if event.get("event") == "response":
                     data = event.get("data", {})
                     content_list = data.get("content", [])
-                    # Concatenate ALL "text" type content items (agent may produce multiple text blocks around charts)
                     text_parts = [item.get("text", "") for item in content_list if item.get("type") == "text"]
                     if text_parts:
                         return json.dumps({"status": "success", "response": "\n".join(text_parts)})
-                    # Fallback: try first item
                     if content_list:
                         return json.dumps({"status": "success", "response": content_list[0].get("text", "")})
             # Fallback: concatenate text deltas
@@ -192,52 +235,6 @@ def run(session, prompt: str) -> str:
 $$;
 
 GRANT USAGE ON PROCEDURE CORE.CALL_AGENT(STRING) TO APPLICATION ROLE APP_PUBLIC;
-
--- ============================================================
--- DEBUG PROCEDURE: Returns raw API response for inspection
--- ============================================================
-CREATE OR REPLACE PROCEDURE CORE.DEBUG_AGENT(prompt STRING)
-RETURNS STRING
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.11'
-PACKAGES = ('snowflake-snowpark-python')
-HANDLER = 'run'
-EXECUTE AS OWNER
-AS $$
-import _snowflake
-import json
-
-def run(session, prompt: str) -> str:
-    app_db = session.sql("SELECT CURRENT_DATABASE()").collect()[0][0]
-    agent_path = f"/api/v2/databases/{app_db}/schemas/CORE/agents/SALES_AGENT:run"
-    payload = {
-        "messages": [
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
-        ]
-    }
-    resp = _snowflake.send_snow_api_request(
-        "POST", agent_path, {}, {}, payload, None, 120000
-    )
-    content = resp.get("content", "")
-    try:
-        events = json.loads(content)
-        event_types = [e.get("event") for e in events]
-        # Show last 5 events in detail
-        last_events = events[-5:] if len(events) > 5 else events
-        return json.dumps({
-            "status": resp.get("status"),
-            "num_events": len(events),
-            "event_types": event_types,
-            "last_events": last_events
-        }, default=str)
-    except:
-        return json.dumps({
-            "status": resp.get("status"),
-            "content_tail": content[-3000:] if len(content) > 3000 else content
-        })
-$$;
-
-GRANT USAGE ON PROCEDURE CORE.DEBUG_AGENT(STRING) TO APPLICATION ROLE APP_PUBLIC;
 
 -- ============================================================
 -- TEST PROCEDURE (quick validation — calls INITIALIZE first)

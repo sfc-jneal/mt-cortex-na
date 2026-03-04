@@ -2,6 +2,7 @@
 .env
 
 # Rendered SQL files (generated from .template by `make render`)
+app-package/setup.sql
 provider/01_setup.sql
 scripts/deploy.sql
 scripts/share.sql
